@@ -1,4 +1,5 @@
-require("dotenv").config();
+// require("dotenv").config();
+const config = require("../config");
 const watch = require("node-watch");
 const fetch = require("node-fetch");
 const nodePath = require("path");
@@ -10,8 +11,8 @@ const FormData = require("form-data");
 const upload = multer({ dest: "uploads/" });
 const app = express();
 
-const SYNC_FROM_DIR = process.env.SYNC_FROM_DIR;
-const SYNC_TO_DIR = process.env.SYNC_TO_DIR;
+const SYNC_FROM_DIR = config.SYNC_FROM_DIR;
+const SYNC_TO_DIR = config.SYNC_TO_DIR;
 const createFolder = (folderName) => {
   // Check if folder exists else create folder
   if (!fs.existsSync(folderName)) {
@@ -38,21 +39,12 @@ watch(SYNC_FROM_DIR, { recursive: false }, async (evt, name) => {
 
 app.post("/files", upload.single("file"), function (req, res, next) {
   const { originalname, path } = req.file;
-
   const file = fs.readFileSync(path);
-
   fs.writeFileSync(nodePath.join(SYNC_TO_DIR, originalname), file);
   fs.unlinkSync(path);
+  console.log("synced sucessfully!");
   res.status(200);
   res.send("success");
 });
 
-// app.post("/upload", async (req, res, next) => {
-//   req.on("data", (data) => {
-//     console.log(data);
-//   });
-
-//   res.status(200);
-//   res.send({ message: "success" });
-// });
-app.listen(process.env.PORT);
+app.listen(config.PORT);
