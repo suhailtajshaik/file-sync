@@ -24,8 +24,10 @@ const syncStats = {
 };
 
 // Debouncing: track pending file operations
-const pendingOperations = new Map();
+const pendingOperations = new Map(); // Map<string, { timeoutId: NodeJS.Timeout, timestamp: number }>
 const DEBOUNCE_DELAY = 500; // ms
+const MAX_PENDING_OPERATIONS = 1000; // Maximum number of pending operations
+const OPERATION_EXPIRY_MS = 300000; // 5 minutes - operations older than this are considered stale
 
 /**
  * Create folder recursively
@@ -80,6 +82,28 @@ const retryWithBackoff = async (fn, maxRetries = 3, baseDelay = 1000) => {
 const log = (level, message, data = {}) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] [${level}] ${message}`, data);
+};
+
+/**
+ * Cleanup expired pending operations to prevent memory leaks
+ */
+const cleanupPendingOperations = () => {
+  const now = Date.now();
+  let cleanedCount = 0;
+
+  for (const [filePath, operation] of pendingOperations.entries()) {
+    // Check if operation has expired
+    if (now - operation.timestamp > OPERATION_EXPIRY_MS) {
+      clearTimeout(operation.timeoutId);
+      pendingOperations.delete(filePath);
+      cleanedCount++;
+      log('WARN', `Cleaned up expired operation for: ${filePath}`);
+    }
+  }
+
+  if (cleanedCount > 0) {
+    log('INFO', `Cleaned up ${cleanedCount} expired pending operations`);
+  }
 };
 
 /**
@@ -147,7 +171,25 @@ const handleFileChange = (evt, filePath) => {
 
   // Clear existing timeout for this file
   if (pendingOperations.has(filePath)) {
-    clearTimeout(pendingOperations.get(filePath));
+    const existingOperation = pendingOperations.get(filePath);
+    clearTimeout(existingOperation.timeoutId);
+  }
+
+  // Check if we've hit the max pending operations limit
+  if (pendingOperations.size >= MAX_PENDING_OPERATIONS) {
+    log('WARN', `Max pending operations (${MAX_PENDING_OPERATIONS}) reached, cleaning up old operations`);
+    cleanupPendingOperations();
+
+    // If still at limit after cleanup, remove oldest operation
+    if (pendingOperations.size >= MAX_PENDING_OPERATIONS) {
+      const oldestEntry = pendingOperations.entries().next().value;
+      if (oldestEntry) {
+        const [oldestPath, oldestOp] = oldestEntry;
+        clearTimeout(oldestOp.timeoutId);
+        pendingOperations.delete(oldestPath);
+        log('WARN', `Removed oldest pending operation to make room: ${oldestPath}`);
+      }
+    }
   }
 
   // Set new timeout
@@ -166,7 +208,11 @@ const handleFileChange = (evt, filePath) => {
     }
   }, DEBOUNCE_DELAY);
 
-  pendingOperations.set(filePath, timeoutId);
+  // Store operation with timestamp for expiry tracking
+  pendingOperations.set(filePath, {
+    timeoutId: timeoutId,
+    timestamp: Date.now()
+  });
 };
 
 // Initialize directories
@@ -176,6 +222,18 @@ createFolder(SYNC_TO_DIR);
 // Watch directory with recursive enabled
 log('INFO', `Starting file watcher on: ${SYNC_FROM_DIR}`);
 watch(SYNC_FROM_DIR, { recursive: true }, handleFileChange);
+
+// Start periodic cleanup to prevent memory leaks
+const cleanupInterval = setInterval(() => {
+  cleanupPendingOperations();
+}, 60000); // Cleanup every 1 minute
+
+// Cleanup on process exit
+process.on('SIGINT', () => {
+  clearInterval(cleanupInterval);
+  log('INFO', 'Cleanup interval stopped');
+  process.exit(0);
+});
 
 /**
  * Endpoint to receive files
