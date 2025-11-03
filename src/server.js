@@ -279,10 +279,32 @@ app.post("/files", upload.single("file"), async function (req, res, next) {
     const destDir = nodePath.dirname(destPath);
     createFolder(destDir);
 
-    // Move file to destination
-    const file = fs.readFileSync(tempPath);
-    fs.writeFileSync(destPath, file);
-    fs.unlinkSync(tempPath);
+    // Move file to destination using streaming (prevents memory issues with large files)
+    await new Promise((resolve, reject) => {
+      const readStream = fs.createReadStream(tempPath);
+      const writeStream = fs.createWriteStream(destPath);
+
+      // Pipe read stream to write stream
+      readStream.pipe(writeStream);
+
+      writeStream.on('finish', () => {
+        // Delete temp file after successful write
+        fs.unlinkSync(tempPath);
+        resolve();
+      });
+
+      writeStream.on('error', (err) => {
+        // Clean up on error
+        readStream.destroy();
+        reject(err);
+      });
+
+      readStream.on('error', (err) => {
+        // Clean up on error
+        writeStream.destroy();
+        reject(err);
+      });
+    });
 
     log('SUCCESS', `File received and saved: ${relativePath}`);
 
