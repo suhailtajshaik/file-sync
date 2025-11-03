@@ -29,6 +29,9 @@ const DEBOUNCE_DELAY = 500; // ms
 const MAX_PENDING_OPERATIONS = 1000; // Maximum number of pending operations
 const OPERATION_EXPIRY_MS = 300000; // 5 minutes - operations older than this are considered stale
 
+// Track in-flight sync operations to prevent race conditions
+const inFlightSyncs = new Set(); // Set<string> - file paths currently being synced
+
 /**
  * Create folder recursively
  */
@@ -110,6 +113,15 @@ const cleanupPendingOperations = () => {
  * Sync file to remote server
  */
 const syncFile = async (filePath, relativePath) => {
+  // Check if sync is already in progress for this file
+  if (inFlightSyncs.has(filePath)) {
+    log('WARN', `Sync already in progress for: ${relativePath}, skipping duplicate sync`);
+    return;
+  }
+
+  // Mark file as being synced
+  inFlightSyncs.add(filePath);
+
   try {
     log('INFO', `Syncing file: ${relativePath}`);
 
@@ -158,6 +170,9 @@ const syncFile = async (filePath, relativePath) => {
     syncStats.totalErrors++;
     log('ERROR', `Failed to sync file: ${relativePath}`, { error: error.message });
     throw error;
+  } finally {
+    // Always remove from in-flight set, even if there was an error
+    inFlightSyncs.delete(filePath);
   }
 };
 
@@ -293,7 +308,8 @@ app.get("/health", (req, res) => {
     status: syncStats.status,
     uptime: process.uptime(),
     syncStats: syncStats,
-    pendingOperations: pendingOperations.size
+    pendingOperations: pendingOperations.size,
+    inFlightSyncs: inFlightSyncs.size
   });
 });
 
@@ -305,7 +321,8 @@ app.get("/status", (req, res) => {
     syncFromDir: SYNC_FROM_DIR,
     syncToDir: SYNC_TO_DIR,
     stats: syncStats,
-    pendingOperations: pendingOperations.size
+    pendingOperations: pendingOperations.size,
+    inFlightSyncs: inFlightSyncs.size
   });
 });
 
